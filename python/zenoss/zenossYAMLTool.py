@@ -3,6 +3,8 @@
 # Author: ikenticus
 # Created: April 2010
 # Updated: May 2011
+# Modified: jmorcar
+# Updated: Oct 2015
 #
 # After discovering that deleting ZenPacks will remove all
 # associated devices with no method of recovery except for
@@ -14,10 +16,14 @@
 # decided that I'd rather have YAML files rather than
 # passing the amount of switches needed for templates.
 #
+# New features:
+# - Added "-f" to export both, event clasess and event mapping(s) from specified event organizer as yaml
+# - Modified "-i" import option to handle the new "add_eventOrganizer" action of the yaml export file. 
 
 import os
 import re
 import sys
+
 sys.path.append("$ZENHOME/lib/python")
 sys.path.append("$ZENHOME/lib/python2.4/site-packages")
 sys.path.append("/usr/lib64/python2.4/site-packages")
@@ -25,7 +31,6 @@ sys.path.append(os.path.dirname(sys.argv[0]))
 
 import types
 import yaml
-
 import Globals
 from Products.ZenUtils.ZenScriptBase import ZenScriptBase
 from transaction import commit
@@ -52,11 +57,14 @@ Usage: %s -s
     -o /Java                    export osprocess(es) from specified process organizer as yaml
     -r /Graph\ Reports          export report(s) from specified report organizer as yaml
     -r /Graph\ Reports/web      export specific report from report organizer as yaml
+	-z /App/Zeus                export event clasess and event mapping(s) form specified event organizer as yaml
     -e /App/Zeus                export event mapping(s) from specified events organizer as yaml
     -x /Perf/Snmp               export transforms from specified event class as yaml
     -c smsalert                 export event commands(s) from specified command name as yaml
     -u johndoe[,janedoe]        export specified csv user(s) and related settings
     -a johndoe                  export alerting rule(s) from specified user/group
+
+All exports are dumped by stdout. You can redirect the output via '>' clausule. Example: >/path/to/exportfile.yaml
 
 Currently supported import actions:
 %s
@@ -111,7 +119,24 @@ def test_eventclass(evt):
     for e in dmd.Events.getInstances():
         if e.getEventClass() == evt:
             return e
+###############################
 
+def edit_property(inst,prop,val,ttype):
+   if not inst.valid_property_id(prop):
+       print("Deleting PROPERTY: %s" % prop)
+       inst._delProperty(prop)
+   inst._setProperty(prop,val,type=ttype)
+   print("Adding PROPERTY: %s" % prop)
+
+
+def test_eventOranizer(evt):
+    for e in dmd.Events.getOrganizerNames():
+        if e == evt:
+            result = True
+        else: result = False
+    return result
+
+###############################
 
 def test_processclass(ops):
     for po in dmd.Processes.getOrganizerNames():
@@ -245,7 +270,7 @@ def export_reports(rptMatch):
                 print "Not a support report class: %s" % ro
                 continue
             try: list.append(dict)
-            except: list = [ dict ] 
+            except: list = [ dict ]
     elif ro in dmd.Reports.getOrganizerNames():
         rc = dmd.Reports.getOrganizer(ro)
         for r in rc.reports():
@@ -359,15 +384,32 @@ def export_eventcommand(cmd):
         block[cp['id']] = getattr(cmd, cp['id'])
     return block
 
-
 def export_eventmappings(evtMatch):
-    for e in dmd.Events.getInstances():
-        if e.getEventClass() == evtMatch:
+    conex = dmd.Events.getOrganizer(evtMatch)
+    for e in conex.getInstances():
+        if e.getEventClass():
             dict = export_eventmapping(e)
             try: list.append(dict)
             except: list = [ dict ]
     return list
 
+#Issue detected - Disable
+#def export_eventmappings(evtMatch):
+#    for e in dmd.Events.getInstances():
+#        if e.getEventClass() == evtMatch:
+#            dict = export_eventmapping(e)
+#            try: list.append(dict)
+#            except: list = [ dict ]
+#    return list
+
+def export_classes(evtMatch):
+    conex = dmd.Events.getOrganizer(evtMatch)
+    for name in conex.getOrganizerNames():
+        e = dmd.Events.getOrganizer(name)
+        dict = export_eventclasess(e)
+        try: list.append(dict)
+        except: list = [ dict ]
+    return list
 
 def export_eventmapping(evt):
     block = {'action': 'add_eventmapping'}
@@ -378,6 +420,15 @@ def export_eventmapping(evt):
         if attr: block[ea['id']] = attr
     return block
 
+def export_eventclasess(e):
+    block = {'action': 'add_eventOrganizer'}
+    block['eventPath'] = e.getOrganizerName()
+    #block['eventName'] = evt.id
+    #block['eventPath'] = evt.getEventClass()
+    for ea in e._properties:
+       attr = getattr(e,ea['id'])
+       if attr: block[ea['id']] = attr
+    return block
 
 def export_transforms(evtClass):
     block = {'action': 'add_transforms'}
@@ -510,7 +561,7 @@ def export_templates(objMatch):
             if not tpl.id in obj.zDeviceTemplates: continue
             dict = export_template(tpl)
             try: list.append(dict)
-            except: list = [ dict ] 
+            except: list = [ dict ]
     if not list:
         print "Unable to determine device/organizer based on input: %s" % objMatch
         return
@@ -998,29 +1049,74 @@ def import_yaml(data):
                 for c in block.keys():
                     setattr(cmd, c, block[c])
                 commit()
+###############################################
 
+        elif action == 'add_eventOrganizer':
+                        epath = block['eventPath']
+                        evt = dmd.Events.getOrganizer('/')
+                        if test_eventOranizer(epath):
+                           #DELETING first is not implemented because the sort yaml dump causes problems
+                           #print "- DELETEING Event Organizer %s" % epath
+                           #dmd.Events.manage_deleteOrganizer(epath)
+                           print "Using the existing Event Organizer: %s" % epath
+                        else:
+                              print "/\ Event Organizer is not found: %s" % epath
+                              print "+ ADDING Event Organizer: %s" % epath
+                              evt.manage_addOrganizer(epath)
+                        organz = evt.getOrganizer(epath)
+                        if 'description' in block:
+                                   print ("Adding Description...")
+                                   organz._setPropValue("description",block['description'])
+                        if 'transform' in block:
+                                   print ("Adding transform...")
+                                   organz._setPropValue("transform",block['transform'])
+                        if 'zEventAction' in block:
+                                   edit_property(organz,"zEventAction",block['zEventAction'],"string")
+                        if 'zEventClearClasses' in block:
+                                   edit_property(organz,"zEventClearClasses",block['zEventClearClasses'],"lines")
+                        if 'zEventSeverity' in block:
+                                   edit_property(organz,"zEventSeverity",block['zEventSeverity'],"int")
+                        if 'zFlappingIntervalSeconds' in block:
+                                   edit_property(organz,"zFlappingIntervalSeconds",block['zFlappingIntervalSeconds'],"int")
+                        if 'zFlappingSeverity' in block:
+                                   edit_property(organz,"zFlappingSeverity",block['zFlappingSeverity'],"int")
+                        if 'zFlappingThreshold' in block:
+                                   edit_property(organz,"zFlappingThreshold",block['zFlappingThreshold'],"int")
+                        commit()
+
+###############################################
         elif action == 'add_eventmapping':
             epath = block['eventPath']
+			ename = block['eventName']
             if not test_eventclass(epath):
-                print "+ ADDING Event Class %s" % epath
+                print "+++ ADDING Event Organizer - %s" % epath
                 evt = dmd.Events.getOrganizer('/')
-		evt.manage_addOrganizer(epath)
+                evt.manage_addOrganizer(epath)
                 commit()
             evt = dmd.Events.getOrganizer(epath)
-            ename = block['eventName']
             inst_exists = None
             for ei in evt.getInstances():
                 if ei.id == ename:
                     inst_exists = ei
+                    #Edits an Event Mapping Instance
+                    ei.eventName = ename
+                    instkeys = block.keys()
+                    print "+ EDITING %s/%s - %s" % (epath, ename, instkeys)
+                    ei.eventClassKey = block['eventClassKey']
+                    if 'transform' in block: ei.transform = block['transform']
+                    if 'example' in block: ei.example = block['example']
+                    if 'explanation' in block: ei.explanation = block['explanation']
+                    if 'rule' in block: ei.rule = block['rule']
+                    if 'regex' in block: ei.regex = block['regex']
+                    if 'resolution' in block: ei.resolution = block['resolution']
                     break
             if not inst_exists:
-                print "+ ADDING Event Mapping (Instance) %s" % ename
+                print "+ ADDING Event Mapping - %s/%s" % (epath, ename)
                 ei = evt.createInstance(ename)
-		#print ei._properties
-		for p in ei._properties:
+                #print ei._properties
+                for p in ei._properties:
                     if p['id'] is not 'sequence':
                         if not p['id'] in block: block[p['id']] = ''
-                # setattr does not work correctly, nor does **block
                 ei.manage_editEventClassInst(
                     block["eventName"],
                     block["eventClassKey"],
@@ -1030,6 +1126,7 @@ def import_yaml(data):
                     block["transform"],
                     block["explanation"],
                     block["resolution"])
+                #FOR PERFORMANCE - Not commit for each event instance
                 commit()
 
         elif action == 'del_transforms':
@@ -1042,7 +1139,7 @@ def import_yaml(data):
             if not test_eventclass(eclass):
                 print "+ ADDING Event Class %s" % eclass
                 evt = dmd.Events.getOrganizer('/')
-		evt.manage_addOrganizer(eclass)
+                evt.manage_addOrganizer(eclass)
                 commit()
             evt = dmd.Events.getOrganizer(eclass)
             evt.manage_editEventClassTransform(transform = block['eventTransforms'])
@@ -1059,7 +1156,7 @@ def import_yaml(data):
                 if obj:
                     obj.manage_deleteMaintenanceWindow([wname])
             commit()
-    
+
         elif action == 'add_window':
             win = None
             obj = dmd.Devices.findDevice(block['windowPath'].split('/')[-1])
@@ -1103,7 +1200,7 @@ def import_yaml(data):
                 bindings.remove(tname)
                 obj.bindTemplates(bindings)
                 commit()
-    
+
         elif action == 'add_template':
             tpl = None
             obj = dmd.Devices.findDevice(block['templatePath'].split('/')[-1])
@@ -1195,15 +1292,15 @@ def import_yaml(data):
             obj.bindTemplates(bindings)
             commit()
 
-
 def main (args):
     # parse/process command line options/arguments
     import getopt
+    #print (args) #FIXME - For debug
     try:
-        opts, args = getopt.getopt(args, "Aa:d:c:e:hi:lo:pr:t:u:w:x:",
+        opts, args = getopt.getopt(args, "Aa:d:c:e:hi:lo:pr:t:u:w:x:z:",
             [ '--help', '--device', '--event', '--template', '--osprocess',
               '--import', '--user', '--alert', '--report', '--command',
-              '--purge', '--list', '--transform', '--window' ])
+              '--purge', '--list', '--transform', '--window', '--zclass' ])
     except getopt.error:
         usage(3)
 
@@ -1224,6 +1321,10 @@ def main (args):
             list = export_devices(val)
         if opt in ('-e', '--event'):
             list = export_eventmappings(val)
+        if opt in ('-z', '--zclass'):
+            list = export_classes(val)
+            event_list = export_eventmappings(val)
+            list.extend(event_list)
         if opt in ('-o', '--osprocess'):
             list = export_osprocesses(val)
         if opt in ('-r', '--report'):
@@ -1248,4 +1349,3 @@ def main (args):
 
 if __name__ == "__main__":
     main(sys.argv[1:])
-
